@@ -3,4 +3,4 @@
 all:
 	gcc tinyshell.c -o tinyshell -g -std=c99
 clean:
-	rm -f ./test
+	rm -rf ./tinyshell ./tinyshell.dSYM

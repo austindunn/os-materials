@@ -5,8 +5,6 @@
 #include <unistd.h>
 #include <string.h>
 #include <stdlib.h>
-#include <signal.h>
-#include <sys/types.h>
 #include <sys/wait.h>
 #include <ctype.h>
 
@@ -18,6 +16,7 @@ struct jobNode {
 	struct jobNode *prev;
 	struct jobNode *next;
 };
+struct jobNode *head;		//global pointer to head jobNode
 
 //a struct to keep track of information pertaining to each of the ten items stored in history
 struct hist {
@@ -34,16 +33,16 @@ int getcmd(char *prompt, char *args[], int *background, char **cmdcopy)
 	int length, i = 0;
 	char *token, *loc;
 	char *line = NULL;
-    	size_t linecap = 0;
+	size_t linecap = 0;
 
-    	printf("%s", prompt);
-    	length = getline(&line, &linecap, stdin);
+	printf("%s", prompt);
+	length = getline(&line, &linecap, stdin);
 	
     	//here the string pointed to by line is copied into cmdcopy, which is kept on the
 	//heap to be used beyond the scope of this function. This memory is freed at the
 	//end of each loop in main()
-    	*cmdcopy = (char *) malloc(sizeof(char) * strlen(line));
-    	strcpy(*cmdcopy,line);
+	*cmdcopy = (char *) malloc(sizeof(char) * strlen(line));
+	strcpy(*cmdcopy,line);
 
     	if (length <= 0) {
     	    	exit(-1);
@@ -59,7 +58,7 @@ int getcmd(char *prompt, char *args[], int *background, char **cmdcopy)
     	while ((token = strsep(&line, " \t\n")) != NULL) {
     	    	for (int j = 0; j < strlen(token); j++)
             		if (token[j] <= 32)
-                		token[j] = '\0';
+				token[j] = '\0';
         	if (strlen(token) > 0)
         		args[i++] = token;
     	}
@@ -68,7 +67,7 @@ int getcmd(char *prompt, char *args[], int *background, char **cmdcopy)
 	//free the line variable to avoid memory leak
 	free(line);
 
-   	 return i;
+	return i;
 }
 
 //method for adding items to the max-10-item history array
@@ -116,13 +115,20 @@ int printHistory(struct hist *histlist, int count) {
 //a method that uses the same code used in getcmd() to break up a command string into its arguments.
 //this is used to separate out arguments when a command is called from history (the hist struct keeps
 //only the whole command string)
-int extractArgs(char *args[], char *line) {
+int extractArgs(char *args[], char *line, int *background) {
 	int i = 0;
-	char *token;
+	char *token, *loc;
 	
 	//copy the input parameter to keep the string it points to safe
 	char *linecopy = (char *) malloc(sizeof(char) * strlen(line));
 	strcpy(linecopy, line);
+
+	//set the background variable to 1 if last character in command is '&'
+    	if ((loc = index(linecopy, '&')) != NULL) {
+		*background = 1;
+		*loc = ' ';
+    	} else
+        	*background = 0;
 
 	while ((token = strsep(&linecopy, " \t\n")) != NULL) {
 		for (int j = 0; j < strlen(token); j++)
@@ -136,125 +142,101 @@ int extractArgs(char *args[], char *line) {
 	return 1;
 }
 
-//Prints the jobs that have been run. Ideally, this would print only the running background jobs, but since my
-//removeJobs() function is not working, it lists all jobs that have been run in the background
-void printJobs(struct jobNode *head) {
-	printf("\n");
-	//first check if jobs list is empty, do nothing if so
-	if (head->thispid == 0) {
-		printf("No jobs have been run in the background yet.\n");
+struct jobNode *createNewJob(pid_t newPid, char *newCommand) {
+	struct jobNode *newJob = (struct jobNode*) malloc(sizeof(struct jobNode));
+	newJob->thispid = newPid;
+	newJob->jobString = malloc(strlen(newCommand+1));
+	strcpy(newJob->jobString, newCommand);
+	newJob->prev = NULL;
+	newJob->next = NULL;
+	return newJob;
+}
+
+//adds a background job to the end of the list of background jobs
+void addToJobs(pid_t newPid, char *newCommand) {
+	struct jobNode *newJob = createNewJob(newPid, newCommand);
+	//if the list is empty, set the head's information to that of the new job
+	if (head == NULL) {
+		head = newJob;
 		return;
 	}
-	struct jobNode *start = head;
-	int i;
-	while (start->next->thispid != 0) {
-		//print the PID and command associated with each background job
-		i = (int) start->thispid;
-		printf("[%d] %s", i, start->jobString);
-		start = start->next;
-	}
-	//print info on last job
-	i = (int) start->thispid;
-	printf("[%d] %s", i, start->jobString);
-	return;
+	//otherwise, move a pointer to the end of the list
+	struct jobNode *crt = head;
+	while (crt->next != NULL)
+		crt = crt->next;
+	crt->next = newJob;
+	newJob->prev = crt;
 }
 
-//adds a background job to the list of background jobs
-int addToJobs(pid_t newpid, char **newjob, struct jobNode *head) {
-	//if the list is empty, set the head's information to that of the new job
-	if (head->thispid == 0) {
-		head->thispid = newpid;
-		head->jobString = malloc(strlen(*newjob)+1);
-		strcpy(head->jobString, *newjob);
-		head->prev = NULL;
-		head->next->thispid = 0;
-		//0 as return value in case need to check if the job added is now the head (and therefore 
-		//currently the only job in the list)
-		return 0;
-	}
-	//otherwise, traverse through list to find the last item, and append the list with a jobNode
-	//containing the new information
-	struct jobNode *start = head;
-	//move pointer to end of list
-	while (start->next->thispid != 0){
-		start = start->next;
-	}
-	//give information of the new background command to start->next, set up heap space for next node
-	start->next->thispid = newpid;
-	start->next->jobString = malloc(strlen(*newjob)+1);
-	strcpy(start->next->jobString, *newjob);
-	start->next->prev = start;
-	start->next->next = (struct jobNode*) malloc(sizeof(struct jobNode));
-	start->next->next->thispid = 0;
-	//return value of 1 indicates that added job is NOT the head
-	return 1;
-}
-
-//this function to remove jobNodes from the linked list of jobNodes doesn't work (gives a Segmentation Fault 
-//when run on lists of length > 1). It is therefore not used in the current version of this program.
-int removeJob(struct jobNode *del) {
+//the following function removes a job from the current list of jobs
+void removeJob(struct jobNode *del) {
 	//if need to remove head:
-        if (del->prev == NULL) {
-		//head is only member of the list
-		if (del->next->thispid == 0) {
-			free(del->next->jobString);
-			free(del->next);
-			free(del->jobString);
-			del->thispid = 0;
-			del->next = (struct jobNode*) malloc(sizeof(struct jobNode));
-		//otherwise, if head is one of two members of the list
-		} else {
-			free(del->jobString);
-			del->jobString = malloc(strlen(del->next->jobString));
-			strcpy(del->jobString, del->next->jobString);
-			struct jobNode **temp = &(del->next->next);
-			free(del->next->jobString);
-			free(del->next);
-			del->next = *temp;
-		//otherwise if size of list is greater than 2
-		}
+	if (head == del) {
+		head = del->next;
 	//if need to remove tail or a node somewhere in the middle
+	} else if (del->next == NULL) {
+		del->prev->next = NULL;
 	} else  {
 		del->prev->next = del->next;
 		del->next->prev = del->prev;
-		free(del->jobString);
-		free(del);
 	}
-	return 1;
+	free(del->jobString);
+	free(del);
+	return;
 }
 
 //This function checks which processes are currently running, and would then remove that job's jobNode 
 //from the linked list of jobNodes if my removeJobs function was working correctly.
-int checkJobs(struct jobNode *head) {
+void updateJobs() {
 	//if list is empty, return 0
-	if (head->thispid == 0)
-		return 0;
+	if (head == 0)
+		return;
 	//otherwise, traverse through list to see which jobs are running using waitpid()
 	struct jobNode *crt = head;
 	int status, waitcheck;
-	while (crt->next->thispid != 0) {
+	int i = 0;
+	while (crt != NULL) {
+		i++;
 		waitcheck = waitpid(crt->thispid, &status, WNOHANG);
-        	if (waitcheck != 0 && (WIFEXITED(status) || WIFSIGNALED(status))){
-			//removeJob(crt);
+		if (waitcheck != 0 && (WIFEXITED(status) || WIFSIGNALED(status))){
+			removeJob(crt);
 		}
 		crt = crt->next;
 	}
-	//check final jobNode (that contains job info)
-	waitcheck = waitpid(crt->thispid, &status, WNOHANG);
-        if (waitcheck != 0 && (WIFEXITED(status) || WIFSIGNALED(status))){
-		//removeJob(crt);
-	}
-	return 1;
+	return;
 }
 
-//This is a constructor to create the first jobNode. From there the list is built
-struct jobNode *makeFirstJob() {
-	struct jobNode *create = (struct jobNode*) malloc(sizeof(struct jobNode));
-	create->thispid = 0;
-	create->jobString = NULL;
-	create->prev = NULL;
-	create->next = (struct jobNode *) malloc(sizeof(struct jobNode));
-	return create;
+//Prints the jobs that have been run. Ideally, this would print only the running background jobs, but since my
+//removeJobs() function is not working, it lists all jobs that have been run in the background
+void printJobs() { //struct jobNode *head) { -- removing parameter, as head is now defined as a global var
+	//first check if jobs list is empty, do nothing if so
+	if (head == NULL) {
+		printf("No jobs currently running in the background.\n");
+		return;
+	}
+	struct jobNode *crt = head;
+	int i;
+	while (crt != NULL) {
+		//print the PID and command associated with each background job
+		i = (int) crt->thispid;
+		printf("[%d] %s", i, crt->jobString);
+		crt = crt->next;
+	}
+	return;
+}
+
+int foregroundJob(char *args[]) {
+	struct jobNode *crt = head;
+	int status;
+	while (crt != NULL) {
+		if (crt->thispid == atoi(args[1])) {
+			removeJob(crt);
+			waitpid((pid_t) atoi(args[1]), &status, 0);
+			return 1;
+		}
+		crt = crt->next;
+	}
+	return 0;
 }
 
 int main()
@@ -264,12 +246,12 @@ int main()
 	int bg, status, cdCheck;
 	int histCount = 0; 			//keeps track of which history item we're on
 	struct hist histarray[10];		//stores history items
-	struct jobNode *top = makeFirstJob();	//first jobNode, from which the list is built
 	pid_t pid, endID;
     
 	while(1) {
 
 		int cnt = getcmd("\n>>  ", args, &bg, &input);
+		printf("\n");
 
 		//if a number is entered as first argument, execute the command with that index in the history array
 		if (isdigit(*args[0])) {
@@ -281,7 +263,6 @@ int main()
 				printf("\nNumber entered does not refer to an item held in History\n");
 				continue;
 			}
-
 			//move to item in history array with the given index
 			for (i = 0; i < 10; i++) {
 				if (histarray[i].index == ref)
@@ -295,9 +276,10 @@ int main()
 			//give input and args values according to the history item, then execute the rest of main()
 			//in accodance with those values
 			free(input);
-			input = malloc(sizeof(histarray[i].args));
+			input = malloc(sizeof(histarray[i].args)+1);
 			strcpy(input, histarray[i].args);
-			extractArgs(args, input);
+			extractArgs(args, input, &bg);
+			//printf("\n%s\n", input);
 		}
 
 		//add the command to history
@@ -314,7 +296,7 @@ int main()
 				exit(1);
 			}
 		//builtin pwd (present working directory)
-		} else if (strcmp(args[0], "pwd") == 0) {
+		/*} else if (strcmp(args[0], "pwd") == 0) {
 			//in case output should be redirected
 			if (cnt > 3) {
 				if (strcmp(args[cnt-3], ">") == 0) {
@@ -338,13 +320,14 @@ int main()
 			char *buffer = NULL;
 			size_t bufferSize = 0;
 			printf("\n%s\n", getcwd(buffer, bufferSize));
+			*/
 		//builtin command to display history
 		} else if (strcmp(args[0], "history") == 0) {
 			printHistory(&histarray[0], histCount);
 		//builtin command to display previously run jobs
 		} else if (strcmp(args[0], "jobs") == 0) {
-			//checkJobs(top);
-			printJobs(top);
+			updateJobs();
+			printJobs();
 		//builtin command to bring a background job to the foreground
 		} else if (strcmp(args[0], "fg") == 0) {
 			//make sure a PID is identified with the fg command
@@ -352,17 +335,13 @@ int main()
 				printf("\nInvalid command: must give a Process ID number with the fg command.\n");
 				continue;
 			}
-			//use kill with 0 signal to check if the identified process exists, handle if not
-			if (kill((pid_t) atoi(args[1]), 0) == -1 && errno == ESRCH) {
-				printf("\nThat process is not currently running.\n");
-			//all good. Bring the job to the foreground using waitpid
-			} else {
-				waitpid((pid_t) atoi(args[1]), &status, 0);
-			}
+			//
+			if (foregroundJob(args) == 0)
+				printf("\nThe process with that PID is not currently running.\n");
 		}
 		//run command if issued with '&' at the end
 		else if (bg) {
-			printf("\nBackground enabled...\n");
+			printf("Background enabled...\n");
 			//fork process...
 			if ((pid = fork()) == -1) {
 				printf("fork() failure... now exiting shell.");
@@ -380,13 +359,13 @@ int main()
 						perror(args[0]);
 						_exit(EXIT_FAILURE);
 					}
-				//check for weird error
+				//handle weird error
 				} else if (execvp(args[0],args) == -1) {
 					perror(args[0]);
 					_exit(EXIT_FAILURE);
 				}
 			} else {			//parent process
-				addToJobs(pid, &input, top);
+				addToJobs(pid, input);
 			}
 		} else {
 
@@ -406,7 +385,6 @@ int main()
 				_exit(EXIT_FAILURE);
 			}
 
-			printf("\nBackground not enabled \n");
 			//fork process...
 			if ((pid = fork()) == -1) {
 				printf("fork() failure... now exiting shell.");

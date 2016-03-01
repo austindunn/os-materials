@@ -8,7 +8,7 @@
 #include <sys/wait.h>
 #include <ctype.h>
 
-//a struct to create a linked list of jobs, along with PIDs and strings to represent
+//a struct to create a doubly linked list of background jobs, along with PIDs and strings to represent
 //the commands that the jobs are associated with
 struct jobNode {
 	pid_t thisPid;
@@ -25,7 +25,9 @@ struct hist {
 	char *args;
 };
 
-//getcmd() reads a string and parses it into an array readable by execvp
+//getcmd() reads a string and parses it into an array readable by execvp, which will be called by
+//a forked child process from main(). getcmd() returns the number of arguments included in the
+//issued command
 int getcmd(char *prompt, char *args[], int *background, char **cmdcopy)
 {
 	int length, i = 0;
@@ -40,11 +42,12 @@ int getcmd(char *prompt, char *args[], int *background, char **cmdcopy)
 	*cmdcopy = (char *) malloc(sizeof(char) * length);
 	strcpy(*cmdcopy,line);
 
+	//return 0 if command is empty
 	if (length <= 1) {
 		return 0;
 	}
 
-    	// Check if job should run in background, and if so, remove '&' from command string
+    	// Check if job should run in background, and if so, remove '&' character from command string
     	if ((loc = index(line, '&')) != NULL) {
     		*background = 1;
     		*loc = ' ';
@@ -64,7 +67,7 @@ int getcmd(char *prompt, char *args[], int *background, char **cmdcopy)
 	return i;
 }
 
-//adds items to the 10-item history array
+//adds commands to the 10-item history array
 int addToHist(struct hist *histList, int *crtindex, char *cmdargs) {
 	//if crtindex is less than 10, simply put the struct at position *crtindex-1
 	if (*crtindex < 10) {
@@ -106,7 +109,7 @@ int printHistory(struct hist *histList, int count) {
 
 //this function uses the same code used in getcmd() to break up a command string into its arguments.
 //this is used to separate out arguments when a command is called from history (the hist struct keeps
-//only the whole command string)
+//the complete command string)
 int extractArgs(char *args[], char *line, int *background) {
 
 	int i = 0;
@@ -123,6 +126,7 @@ int extractArgs(char *args[], char *line, int *background) {
     	} else
         	*background = 0;
 
+	//break line into array of args for execvp()
 	while ((token = strsep(&linecopy, " \t\n")) != NULL) {
 		for (int j = 0; j < strlen(token); j++)
 			if (token[j] <= 32)
@@ -135,6 +139,7 @@ int extractArgs(char *args[], char *line, int *background) {
 	return 1;
 }
 
+//creates and returns a jobNode to be added to the background job list in addToJobs
 struct jobNode *createNewJob(pid_t newPid, char *newCommand) {
 	struct jobNode *newJob = (struct jobNode*) malloc(sizeof(struct jobNode));
 	newJob->thisPid = newPid;
@@ -179,8 +184,8 @@ void removeJob(struct jobNode *del) {
 	return;
 }
 
-//This function checks which processes are currently running, and then removes that job's jobNode 
-//from the list of running jobs
+//This function checks which processes are currently running, and removes completed jobs
+//from the list of running background jobs
 void updateJobs() {
 	//if list is empty, return 0
 	if (head == 0)
@@ -217,7 +222,7 @@ void printJobs() {
 	return;
 }
 
-//if fg is called, this function brings the job specified by PID to the foreground
+//if fg command is entered, this function brings the job specified by PID to the foreground
 int bringToForeground(char *args[]) {
 	struct jobNode *crt = head;
 	int status;
@@ -232,7 +237,7 @@ int bringToForeground(char *args[]) {
 	return 0;
 }
 
-//if command is to be run from history, this function changes the input string to the command
+//if command is to be run from history, this function changes the input string in main() to the command
 //corresponding with the history item specified
 int getCmdFromHistory(char *argList[], char **command, struct hist *histList, int count) {
 
@@ -251,7 +256,7 @@ int getCmdFromHistory(char *argList[], char **command, struct hist *histList, in
 			break;
 	}
 
-	//don't execute the command again if it didn't work the first time
+	//don't execute or record the command again if it didn't work the first time
 	if (histList[i].errFlag == 1) {
 		printf("That command was erroneous. I won't execute or record that one in History again.\n");
 		return 0;
@@ -265,7 +270,7 @@ int getCmdFromHistory(char *argList[], char **command, struct hist *histList, in
 }
 
 //this function does what's needed for each built-in command. Note: these commands cannot be
-//run in the background
+//run in the background. Returns 1 if a built-in command is detected, 0 if not
 int builtInCmd(char *argList[], struct hist *histList, int count) {
 
 	int cdCheck;
@@ -300,7 +305,7 @@ int builtInCmd(char *argList[], struct hist *histList, int count) {
 	return isBuiltIn;
 }
 
-//runs the entered command in the background
+//runs the entered command in the background if command issued with '&' character at the end
 void backgroundExec(char *args[], int argsLen, char *command) {
 	pid_t pid, endId;
 	printf("Background enabled...\n");
@@ -388,6 +393,7 @@ void foregroundExec(char *args[], int argsLen, struct hist *histList, int count)
 			printf("waitpid() failure... now exiting shell.");
 			_exit(EXIT_FAILURE);
 		} else if (endId == pid) {
+			//detect problems with child process
 			if (WIFSIGNALED(status)) {
 				printf("Child process terminated because of an uncaught signal\n");
 			} else if (WIFSTOPPED(status)) {

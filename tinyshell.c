@@ -5,19 +5,18 @@
 #include <unistd.h>
 #include <string.h>
 #include <stdlib.h>
-#include <signal.h>
-#include <sys/types.h>
 #include <sys/wait.h>
 #include <ctype.h>
 
-//a struct to create a flexible linked list of jobs, along with PIDs and strings to represent
+//a struct to create a doubly linked list of background jobs, along with PIDs and strings to represent
 //the commands that the jobs are associated with
 struct jobNode {
-	pid_t thispid;
+	pid_t thisPid;
 	char *jobString;
 	struct jobNode *prev;
 	struct jobNode *next;
 };
+struct jobNode *head;		//global pointer to head jobNode
 
 //a struct to keep track of information pertaining to each of the ten items stored in history
 struct hist {
@@ -26,104 +25,108 @@ struct hist {
 	char *args;
 };
 
-//getcmd() reads a string and parses it into an array readable by execvp
-//NOTE: I have added an argument that will store what is read into the *line pointer after
-//strsep breaks the string up, for purposes of tracking history and jobs
+//getcmd() reads a string and parses it into an array readable by execvp, which will be called by
+//a forked child process from main(). getcmd() returns the number of arguments included in the
+//issued command
 int getcmd(char *prompt, char *args[], int *background, char **cmdcopy)
 {
 	int length, i = 0;
 	char *token, *loc;
 	char *line = NULL;
-    	size_t linecap = 0;
+	size_t linecap = 0;
 
-    	printf("%s", prompt);
-    	length = getline(&line, &linecap, stdin);
-	
-    	//here the string pointed to by line is copied into cmdcopy, which is kept on the
-	//heap to be used beyond the scope of this function. This memory is freed at the
-	//end of each loop in main()
-    	*cmdcopy = (char *) malloc(sizeof(char) * strlen(line));
-    	strcpy(*cmdcopy,line);
+	printf("%s", prompt);
+	length = getline(&line, &linecap, stdin);
 
-    	if (length <= 0) {
-    	    	exit(-1);
-    	}
+	//here the string pointed to by line is copied into cmdcopy, which is kept on the heap
+	*cmdcopy = (char *) malloc(sizeof(char) * length);
+	strcpy(*cmdcopy,line);
 
-    	// Check if background is specified..
+	//return 0 if command is empty
+	if (length <= 1) {
+		return 0;
+	}
+
+    	// Check if job should run in background, and if so, remove '&' character from command string
     	if ((loc = index(line, '&')) != NULL) {
     		*background = 1;
     		*loc = ' ';
     	} else
         	*background = 0;
-
+	
+	//break line into array of args for execvp()
     	while ((token = strsep(&line, " \t\n")) != NULL) {
     	    	for (int j = 0; j < strlen(token); j++)
             		if (token[j] <= 32)
-                		token[j] = '\0';
+				token[j] = '\0';
         	if (strlen(token) > 0)
         		args[i++] = token;
     	}
     	args[i++] = NULL;
-
-	//free the line variable to avoid memory leak
 	free(line);
-
-   	 return i;
+	return i;
 }
 
-//method for adding items to the max-10-item history array
-int addToHist(struct hist *histlist, int *crtindex, char *cmdargs) {
-	//if indx is less than 11, simply put the struct at position indx-1
+//adds commands to the 10-item history array
+int addToHist(struct hist *histList, int *crtindex, char *cmdargs) {
+	//if crtindex is less than 10, simply put the struct at position *crtindex-1
 	if (*crtindex < 10) {
-		histlist[*crtindex].index = *crtindex + 1;
-		histlist[*crtindex].args = malloc(sizeof(cmdargs));
-		strcpy(histlist[*crtindex].args, cmdargs);
-		histlist[*crtindex].errFlag = 0;
-	//otherwise (i.e. if array is full), remove first item and push all other structs back in the array
+		histList[*crtindex].index = *crtindex + 1;
+		histList[*crtindex].args = malloc(sizeof(cmdargs));
+		strcpy(histList[*crtindex].args, cmdargs);
+		histList[*crtindex].errFlag = 0;
+	//otherwise (i.e. if array is full), remove first item, push all other structs back
+	//in the array, and set last item to have new command info
 	} else { 
 		for (int i = 0; i < 9; i++) {
-			histlist[i].index = histlist[i+1].index;
-			free(histlist[i].args);
-			histlist[i].args = malloc(sizeof(histlist[i+1].args));
-			strcpy(histlist[i].args, histlist[i+1].args);
-			histlist[i].errFlag = histlist[i+1].errFlag;
+			histList[i].index = histList[i+1].index;
+			free(histList[i].args);
+			histList[i].args = malloc(sizeof(histList[i+1].args));
+			strcpy(histList[i].args, histList[i+1].args);
+			histList[i].errFlag = histList[i+1].errFlag;
 		}
-		//set last item in array to have information of new command entry
-		histlist[9].index = *crtindex + 1;
-		free(histlist[9].args);
-		histlist[9].args = malloc(sizeof(cmdargs));
-		strcpy(histlist[9].args, cmdargs);
-		histlist[9].errFlag = 0;
+		histList[9].index = *crtindex + 1;
+		free(histList[9].args);
+		histList[9].args = malloc(sizeof(cmdargs));
+		strcpy(histList[9].args, cmdargs);
+		histList[9].errFlag = 0;
 	}
-	//increment the index
 	*crtindex = *crtindex + 1;
 	return 1;
 }
 
-//method for printing the contents of the history array neatly
-int printHistory(struct hist *histlist, int count) {
-	//only print as many items as are currently in the history array
+//prints the contents of the history array neatly
+int printHistory(struct hist *histList, int count) {
 	if (count < 10) {
 		for (int i = 0; i < count; i++)
-			printf("[%d] %s", histlist[i].index, histlist[i].args);
+			printf("[%d] %s", histList[i].index, histList[i].args);
 	} else {
 		for (int i = 0; i < 10; i++)
-			printf("[%d] %s", histlist[i].index, histlist[i].args);
+			printf("[%d] %s", histList[i].index, histList[i].args);
 	}
 	return 1;
 }
 
-//a method that uses the same code used in getcmd() to break up a command string into its arguments.
+//this function uses the same code used in getcmd() to break up a command string into its arguments.
 //this is used to separate out arguments when a command is called from history (the hist struct keeps
-//only the whole command string)
-int extractArgs(char *args[], char *line) {
+//the complete command string)
+int extractArgs(char *args[], char *line, int *background) {
+
 	int i = 0;
-	char *token;
+	char *token, *loc;
 	
 	//copy the input parameter to keep the string it points to safe
 	char *linecopy = (char *) malloc(sizeof(char) * strlen(line));
 	strcpy(linecopy, line);
 
+	//set the background variable to 1 if last character in command is '&'
+    	if ((loc = index(linecopy, '&')) != NULL) {
+		*background = 1;
+		*loc = ' ';
+    	} else
+        	*background = 0;
+
+	//break line into array of args for execvp()
 	while ((token = strsep(&linecopy, " \t\n")) != NULL) {
 		for (int j = 0; j < strlen(token); j++)
 			if (token[j] <= 32)
@@ -136,333 +139,306 @@ int extractArgs(char *args[], char *line) {
 	return 1;
 }
 
-//Prints the jobs that have been run. Ideally, this would print only the running background jobs, but since my
-//removeJobs() function is not working, it lists all jobs that have been run in the background
-void printJobs(struct jobNode *head) {
-	printf("\n");
-	//first check if jobs list is empty, do nothing if so
-	if (head->thispid == 0) {
-		printf("No jobs have been run in the background yet.\n");
+//creates and returns a jobNode to be added to the background job list in addToJobs
+struct jobNode *createNewJob(pid_t newPid, char *newCommand) {
+	struct jobNode *newJob = (struct jobNode*) malloc(sizeof(struct jobNode));
+	newJob->thisPid = newPid;
+	newJob->jobString = malloc(strlen(newCommand+1));
+	strcpy(newJob->jobString, newCommand);
+	newJob->prev = NULL;
+	newJob->next = NULL;
+	return newJob;
+}
+
+//adds a background job to the end of the list of background jobs
+void addToJobs(pid_t newPid, char *newCommand) {
+	struct jobNode *newJob = createNewJob(newPid, newCommand);
+	//if the list is empty, set the head's information to that of the new job
+	if (head == NULL) {
+		head = newJob;
 		return;
 	}
-	struct jobNode *start = head;
-	int i;
-	while (start->next->thispid != 0) {
-		//print the PID and command associated with each background job
-		i = (int) start->thispid;
-		printf("[%d] %s", i, start->jobString);
-		start = start->next;
-	}
-	//print info on last job
-	i = (int) start->thispid;
-	printf("[%d] %s", i, start->jobString);
-	return;
+	//otherwise, move a pointer to the end of the list
+	struct jobNode *crt = head;
+	while (crt->next != NULL)
+		crt = crt->next;
+	crt->next = newJob;
+	newJob->prev = crt;
 }
 
-//adds a background job to the list of background jobs
-int addToJobs(pid_t newpid, char **newjob, struct jobNode *head) {
-	//if the list is empty, set the head's information to that of the new job
-	if (head->thispid == 0) {
-		head->thispid = newpid;
-		head->jobString = malloc(strlen(*newjob)+1);
-		strcpy(head->jobString, *newjob);
-		head->prev = NULL;
-		head->next->thispid = 0;
-		//0 as return value in case need to check if the job added is now the head (and therefore 
-		//currently the only job in the list)
-		return 0;
-	}
-	//otherwise, traverse through list to find the last item, and append the list with a jobNode
-	//containing the new information
-	struct jobNode *start = head;
-	//move pointer to end of list
-	while (start->next->thispid != 0){
-		start = start->next;
-	}
-	//give information of the new background command to start->next, set up heap space for next node
-	start->next->thispid = newpid;
-	start->next->jobString = malloc(strlen(*newjob)+1);
-	strcpy(start->next->jobString, *newjob);
-	start->next->prev = start;
-	start->next->next = (struct jobNode*) malloc(sizeof(struct jobNode));
-	start->next->next->thispid = 0;
-	//return value of 1 indicates that added job is NOT the head
-	return 1;
-}
-
-//this function to remove jobNodes from the linked list of jobNodes doesn't work (gives a Segmentation Fault 
-//when run on lists of length > 1). It is therefore not used in the current version of this program.
-int removeJob(struct jobNode *del) {
-	//if need to remove head:
-        if (del->prev == NULL) {
-		//head is only member of the list
-		if (del->next->thispid == 0) {
-			free(del->next->jobString);
-			free(del->next);
-			free(del->jobString);
-			del->thispid = 0;
-			del->next = (struct jobNode*) malloc(sizeof(struct jobNode));
-		//otherwise, if head is one of two members of the list
-		} else {
-			free(del->jobString);
-			del->jobString = malloc(strlen(del->next->jobString));
-			strcpy(del->jobString, del->next->jobString);
-			struct jobNode **temp = &(del->next->next);
-			free(del->next->jobString);
-			free(del->next);
-			del->next = *temp;
-		//otherwise if size of list is greater than 2
-		}
-	//if need to remove tail or a node somewhere in the middle
+//the following function removes a job from the current list of jobs
+void removeJob(struct jobNode *del) {
+	//if need to remove head
+	if (head == del) {
+		head = del->next;
+	//if need to remove tail
+	} else if (del->next == NULL) {
+		del->prev->next = NULL;
+	//removing from somewhere in the middle
 	} else  {
 		del->prev->next = del->next;
 		del->next->prev = del->prev;
-		free(del->jobString);
-		free(del);
 	}
-	return 1;
+	free(del->jobString);
+	free(del);
+	return;
 }
 
-//This function checks which processes are currently running, and would then remove that job's jobNode 
-//from the linked list of jobNodes if my removeJobs function was working correctly.
-int checkJobs(struct jobNode *head) {
+//This function checks which processes are currently running, and removes completed jobs
+//from the list of running background jobs
+void updateJobs() {
 	//if list is empty, return 0
-	if (head->thispid == 0)
-		return 0;
+	if (head == 0)
+		return;
 	//otherwise, traverse through list to see which jobs are running using waitpid()
 	struct jobNode *crt = head;
 	int status, waitcheck;
-	while (crt->next->thispid != 0) {
-		waitcheck = waitpid(crt->thispid, &status, WNOHANG);
-        	if (waitcheck != 0 && (WIFEXITED(status) || WIFSIGNALED(status))){
-			//removeJob(crt);
+	int i = 0;
+	while (crt != NULL) {
+		i++;
+		waitcheck = waitpid(crt->thisPid, &status, WNOHANG);
+		if (waitcheck != 0 && (WIFEXITED(status) || WIFSIGNALED(status))){
+			removeJob(crt);
 		}
 		crt = crt->next;
 	}
-	//check final jobNode (that contains job info)
-	waitcheck = waitpid(crt->thispid, &status, WNOHANG);
-        if (waitcheck != 0 && (WIFEXITED(status) || WIFSIGNALED(status))){
-		//removeJob(crt);
+	return;
+}
+
+//Prints the currently running jobs
+void printJobs() {
+	if (head == NULL) {
+		printf("No jobs currently running in the background.\n");
+		return;
 	}
+	struct jobNode *crt = head;
+	int i;
+	while (crt != NULL) {
+		//print the PID and command associated with each background job
+		i = (int) crt->thisPid;
+		printf("[%d] %s", i, crt->jobString);
+		crt = crt->next;
+	}
+	return;
+}
+
+//if fg command is entered, this function brings the job specified by PID to the foreground
+int bringToForeground(char *args[]) {
+	struct jobNode *crt = head;
+	int status;
+	while (crt != NULL) {
+		if (crt->thisPid == atoi(args[1])) {
+			removeJob(crt);
+			waitpid((pid_t) atoi(args[1]), &status, 0);
+			return 1;
+		}
+		crt = crt->next;
+	}
+	return 0;
+}
+
+//if command is to be run from history, this function changes the input string in main() to the command
+//corresponding with the history item specified
+int getCmdFromHistory(char *argList[], char **command, struct hist *histList, int count) {
+
+	int ref = atoi(argList[0]);
+	int i;
+	
+	//make sure that the number entered matches the index of a history item
+	if (ref < 0 || ref < count-9 || ref > count) {
+		printf("Number entered does not refer to an item held in History.\n");
+		return 0;
+	}
+
+	//move to item in history array with the given index
+	for (i = 0; i < 10; i++) {
+		if (histList[i].index == ref)
+			break;
+	}
+
+	//don't execute or record the command again if it didn't work the first time
+	if (histList[i].errFlag == 1) {
+		printf("That command was erroneous. I won't execute or record that one in History again.\n");
+		return 0;
+	}
+
+	//give input and argList values according to the history item
+	free(*command);
+	*command = malloc(sizeof(histList[i].args)+1);
+	strcpy(*command, histList[i].args);
 	return 1;
 }
 
-//This is a constructor to create the first jobNode. From there the list is built
-struct jobNode *makeFirstJob() {
-	struct jobNode *create = (struct jobNode*) malloc(sizeof(struct jobNode));
-	create->thispid = 0;
-	create->jobString = NULL;
-	create->prev = NULL;
-	create->next = (struct jobNode *) malloc(sizeof(struct jobNode));
-	return create;
+//this function does what's needed for each built-in command. Note: these commands cannot be
+//run in the background. Returns 1 if a built-in command is detected, 0 if not
+int builtInCmd(char *argList[], struct hist *histList, int count) {
+
+	int cdCheck;
+	int isBuiltIn = 1;
+
+	//builtin exit command
+	if (strcmp(argList[0], "exit") == 0) {
+		printf("Exiting shell...\n\n");
+		exit(0);
+	//builtin cd (change directory) command, implemented with chdir() system call
+	} else if (strcmp(argList[0], "cd") == 0) {
+		if ((cdCheck = chdir(argList[1]) == -1)) {
+			printf("chdir() failure... now exiting shell");
+			_exit(EXIT_FAILURE);
+		}
+	//builtin command to display history
+	} else if (strcmp(argList[0], "history") == 0) {
+		printHistory(&histList[0], count);
+	//builtin command to display currently running jobs
+	} else if (strcmp(argList[0], "jobs") == 0) {
+		updateJobs();
+		printJobs();
+	//builtin command to bring a background job to the foreground
+	} else if (strcmp(argList[0], "fg") == 0) {
+		if (argList[1] == NULL)
+			printf("Invalid command: must give a Process ID number with the fg command.\n");
+		if (bringToForeground(argList) == 0)
+			printf("The process with that PID is not currently running.\n");
+	} else {
+		isBuiltIn = 0;
+	}
+	return isBuiltIn;
 }
 
-int main()
-{
+//runs the entered command in the background if command issued with '&' character at the end
+void backgroundExec(char *args[], int argsLen, char *command) {
+	pid_t pid, endId;
+	printf("Background enabled...\n");
+	//fork process...
+	if ((pid = fork()) == -1) {
+		printf("fork() failure... now exiting shell.");
+		_exit(EXIT_FAILURE);
+	} else if (pid == 0) {		//child process
+		//check if we need to redirect output, and do what's appropriate if so
+		if (argsLen > 3 && strcmp(args[argsLen-3],">") == 0) {
+			close(1);
+			open(args[argsLen-2], O_WRONLY | O_APPEND);
+			//free last two positions in args[] and move NULL value two positions back in 
+			//the array so that command is readable by execvp()
+			args[argsLen-3] = NULL;
+			if (execvp(args[0],args) == -1) {
+				perror(args[0]);
+				_exit(EXIT_FAILURE);
+			}
+		} else if (execvp(args[0],args) == -1) {
+			perror(args[0]);
+			_exit(EXIT_FAILURE);
+		}
+	} else {			//parent process
+		addToJobs(pid, command);
+	}
+}
+
+//runs the entered command in the foreground. If there is an error in running the entered command,
+//a pipe between the forked child process and the parent alerts the parent so that the command
+//is recorded as erroneous, and can't be run or re-recorded in history again
+void foregroundExec(char *args[], int argsLen, struct hist *histList, int count) {
+
+	int status;
+	pid_t pid, endId;
+	int pipeints[2];	//two-int array used to create pipe 
+	int err, errexec;	//err is a buffer for read, errexec will be used to check for execvp failure
+
+	if (pipe(pipeints)) {
+		_exit(EXIT_FAILURE);
+	}
+
+	//CLOEXEC will close the pipe on successful execvp() call
+	if (fcntl(pipeints[1], F_SETFD, fcntl(pipeints[1], F_GETFD) | FD_CLOEXEC)) {
+		_exit(EXIT_FAILURE);
+	}
+
+	//fork process...
+	if ((pid = fork()) == -1) {
+		printf("fork() failure... now exiting shell.");
+		_exit(EXIT_FAILURE);
+	} else if (pid == 0) {			//child process
+		close(pipeints[0]);
+		//in case output of command should be redirected
+		if (argsLen > 3 && strcmp(args[argsLen-3],">") == 0) {
+			close(1);
+			open(args[argsLen-2], O_WRONLY | O_APPEND);
+			//free last two positions in args[] and move NULL value two positions back in the array
+			//so that command is readable by execvp()
+			args[argsLen-3] = NULL;
+			if (execvp(args[0],args) == -1) {
+				write(pipeints[1], &errno, sizeof(int));
+				_exit(EXIT_FAILURE);
+			}
+		} else if (execvp(args[0],args) == -1) {
+			write(pipeints[1], &errno, sizeof(int));
+			_exit(EXIT_FAILURE);
+		}
+	} else {				//parent process
+		close(pipeints[1]);
+		while ((errexec = read(pipeints[0], &err, sizeof(errno))) == -1)
+			if (errno != EAGAIN && errno != EINTR)
+				break;
+		//set history item error flag to 1 if execvp() failed
+		if (errexec != 0) {
+			if (count < 10) { 
+				histList[count-1].errFlag = 1;
+			} else {
+				histList[9].errFlag = 1;
+			}
+		}
+		close(pipeints[0]);
+		//wait on the child process
+		if ((endId = waitpid(pid, &status, 0)) == -1) {
+			printf("waitpid() failure... now exiting shell.");
+			_exit(EXIT_FAILURE);
+		} else if (endId == pid) {
+			//detect problems with child process
+			if (WIFSIGNALED(status)) {
+				printf("Child process terminated because of an uncaught signal\n");
+			} else if (WIFSTOPPED(status)) {
+				printf("Child process has stopped\n");
+			}
+		}
+	}
+}
+
+int main() {
+
 	char *args[20];
-	char *input = NULL;
-	int bg, status, cdCheck;
+	char *input = NULL;			//to be filled by getcmd
+	int cnt, bg, status;
 	int histCount = 0; 			//keeps track of which history item we're on
-	struct hist histarray[10];		//stores history items
-	struct jobNode *top = makeFirstJob();	//first jobNode, from which the list is built
-	pid_t pid, endID;
+	struct hist histArray[10];		//stores history items
     
 	while(1) {
 
-		int cnt = getcmd("\n>>  ", args, &bg, &input);
+		if ((cnt = getcmd("\n>>  ", args, &bg, &input)) == 0) {
+			printf("\nPlease enter a command.\n");
+			continue;
+		}
+		printf("\n");
 
 		//if a number is entered as first argument, execute the command with that index in the history array
 		if (isdigit(*args[0])) {
-			int ref = atoi(args[0]);
-			int i;
-			
-			//make sure that the number entered matches the index of a history item
-			if (ref < 0 || ref < histCount-9 || ref > histCount) {
-				printf("\nNumber entered does not refer to an item held in History\n");
+			if (getCmdFromHistory(args, &input, &histArray[0], histCount) == 0)
 				continue;
-			}
-
-			//move to item in history array with the given index
-			for (i = 0; i < 10; i++) {
-				if (histarray[i].index == ref)
-					break;
-			}
-			//don't execute the command again if it didn't work the first time
-			if (histarray[i].errFlag == 1) {
-				printf("\nThat command was erroneous. I won't execute or record that one in History again.\n");
-				continue;
-			}
-			//give input and args values according to the history item, then execute the rest of main()
-			//in accodance with those values
-			free(input);
-			input = malloc(sizeof(histarray[i].args));
-			strcpy(input, histarray[i].args);
-			extractArgs(args, input);
+			extractArgs(args, input, &bg);
 		}
 
 		//add the command to history
-		addToHist(&histarray[0], &histCount, input);
+		addToHist(&histArray[0], &histCount, input);
 
-		//builtin exit command
-		if (strcmp(args[0], "exit") == 0) {
-			printf("Exiting shell...\n\n");
-			exit(0);
-		//builtin cd (change directory)
-		} else if (strcmp(args[0], "cd") == 0) {
-			if ((cdCheck = chdir(args[1]) == -1)) {
-				printf("chdir() failure... now exiting shell");
-				exit(1);
-			}
-		//builtin pwd (present working directory)
-		} else if (strcmp(args[0], "pwd") == 0) {
-			//in case output should be redirected
-			if (cnt > 3) {
-				if (strcmp(args[cnt-3], ">") == 0) {
-					//fork() to simplify file descriptor table modification
-					if ((pid = fork()) == -1) {
-						printf("fork() failure... now exiting shell.");
-						exit(1);
-					} else if (pid == 0) {
-						close(1);
-						open(args[cnt-2], O_WRONLY | O_APPEND);
-						char *buffer = NULL;
-						size_t bufferSize = 0;
-						printf("\n%s\n", getcwd(buffer, bufferSize));
-						exit(0);
-					} else {
-						continue;
-					}
-				}
-			}
-			//if output not redirected, simply call getcwd() and print to screen
-			char *buffer = NULL;
-			size_t bufferSize = 0;
-			printf("\n%s\n", getcwd(buffer, bufferSize));
-		//builtin command to display history
-		} else if (strcmp(args[0], "history") == 0) {
-			printHistory(&histarray[0], histCount);
-		//builtin command to display previously run jobs
-		} else if (strcmp(args[0], "jobs") == 0) {
-			//checkJobs(top);
-			printJobs(top);
-		//builtin command to bring a background job to the foreground
-		} else if (strcmp(args[0], "fg") == 0) {
-			//make sure a PID is identified with the fg command
-			if (args[1] == NULL) {
-				printf("\nInvalid command: must give a Process ID number with the fg command.\n");
-				continue;
-			}
-			//use kill with 0 signal to check if the identified process exists, handle if not
-			if (kill((pid_t) atoi(args[1]), 0) == -1 && errno == ESRCH) {
-				printf("\nThat process is not currently running.\n");
-			//all good. Bring the job to the foreground using waitpid
-			} else {
-				waitpid((pid_t) atoi(args[1]), &status, 0);
-			}
-		}
+		if (builtInCmd(args, &histArray[0], histCount) == 1)
+			continue;
+
 		//run command if issued with '&' at the end
 		else if (bg) {
-			printf("\nBackground enabled...\n");
-			//fork process...
-			if ((pid = fork()) == -1) {
-				printf("fork() failure... now exiting shell.");
-				exit(1);
-			} else if (pid == 0) {		//child process
-				//check if we need to redirect output, and do what's appropriate if so
-				if (cnt > 3 && strcmp(args[cnt-3],">") == 0) {
-					printf("in child\n");
-					close(1);
-					open(args[cnt-2], O_WRONLY | O_APPEND);
-					//free last two positions in args[] and move NULL value two positions back in 
-					//the array so that command is readable by execvp()
-					args[cnt-3] = NULL;
-					if (execvp(args[0],args) == -1) {
-						perror(args[0]);
-						_exit(EXIT_FAILURE);
-					}
-				//check for weird error
-				} else if (execvp(args[0],args) == -1) {
-					perror(args[0]);
-					_exit(EXIT_FAILURE);
-				}
-			} else {			//parent process
-				addToJobs(pid, &input, top);
-			}
+			backgroundExec(args, cnt, input);
 		} else {
-
-			//two ints to create a pipe to communicate execvp failure (to make sure command can't be
-			//run again from history
-			int pipeints[2];
-			//err is a buffer for read, errexec will be used to check for execvp failure
-			int err, errexec;
-			//create the pipe
-			if (pipe(pipeints)) {
-				perror("pipe");
-				_exit(EXIT_FAILURE);
-			}
-			//CLOEXEC will close the pipe on successful execvp() call
-			if (fcntl(pipeints[1], F_SETFD, fcntl(pipeints[1], F_GETFD) | FD_CLOEXEC)) {
-				perror("fcntl");
-				_exit(EXIT_FAILURE);
-			}
-
-			printf("\nBackground not enabled \n");
-			//fork process...
-			if ((pid = fork()) == -1) {
-				printf("fork() failure... now exiting shell.");
-				exit(1);
-			} else if (pid == 0) {			//child process
-				//close read end of pipe
-				close(pipeints[0]);
-				//in case output of command should be redirected
-				if (cnt > 3 && strcmp(args[cnt-3],">") == 0) {
-					close(1);
-					open(args[cnt-2], O_WRONLY | O_APPEND);
-					//free last two positions in args[] and move NULL value two positions back in the array
-					//so that command is readable by execvp()
-					args[cnt-3] = NULL;
-					if (execvp(args[0],args) == -1) {
-						write(pipeints[1], &errno, sizeof(int));
-						//perror(args[0]);
-						_exit(EXIT_FAILURE);
-					}
-				} else if (execvp(args[0],args) == -1) {
-					write(pipeints[1], &errno, sizeof(int));
-					//perror(args[0]);
-					_exit(EXIT_FAILURE);
-				}
-			} else {				//parent process
-				//close write end of pipe
-				close(pipeints[1]);
-				while ((errexec = read(pipeints[0], &err, sizeof(errno))) == -1)
-					if (errno != EAGAIN && errno != EINTR) break;
-				//check if there was an error executing the command, and record in approapriate struct in history array 
-				if (errexec != 0) {
-					if (histCount < 9) { 
-						histarray[histCount-1].errFlag = 1;
-					} else {
-						histarray[9].errFlag = 1;
-					}
-				}
-				close(pipeints[0]);
-				//wait on the child process (run in foreground)...
-				if ((endID = waitpid(pid, &status, 0)) == -1) {
-					printf("waitpid() failure... now exiting shell.");
-					exit(1);
-				} else if (endID == pid) {
-					if (WIFEXITED(status)) {
-						//yay! complete
-					} else if (WIFSIGNALED(status)) {
-						printf("Child process terminated because of an uncaught signal\n");
-					} else if (WIFSTOPPED(status)) {
-						printf("Child process has stopped\n");
-					}
-				}
-			}
+			foregroundExec(args, cnt, &histArray[0], histCount);
 		}
-		//free input, was malloc'd in getcmd() call
 		free(input);
 	}
-	printf("\n\n");
 }
 
